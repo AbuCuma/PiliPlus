@@ -4,6 +4,7 @@
 //https://github.com/yujincheng08/BiliRoaming/blob/master/app/src/main/res/values/arrays.xml
 
 enum CDNService {
+  auto('auto（自动测速选择）'),
   baseUrl('基础URL（不推荐）'),
   backupUrl('备用URL'),
   ali('ali（阿里云）', 'upos-sz-mirrorali.bilivideo.com'),
@@ -32,6 +33,22 @@ enum CDNService {
 
   const CDNService(this.desc, [this.host]);
 }
+
+/// Hosts [CDNService.auto] measures and ranks, overseas mirrors listed first.
+///
+/// Mirrors bilibili-accelerator's CANDIDATE_POOL. akamai is deliberately absent:
+/// it answers upos-signed paths with 403, so probing it only ever produces a
+/// failed sample.
+const kProbePool = <CDNService>[
+  CDNService.cosov,
+  CDNService.aliov,
+  CDNService.hwov,
+  CDNService.ali,
+  CDNService.tf_hw,
+  CDNService.hw,
+  CDNService.cos,
+  CDNService.tf_tx,
+];
 
 // from https://rec.danmuji.org/dev/cdn-info/
 // {

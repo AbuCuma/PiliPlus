@@ -20,6 +20,7 @@ import 'package:PiliPlus/models/common/sponsor_block/post_segment_model.dart';
 import 'package:PiliPlus/models/common/sponsor_block/segment_model.dart';
 import 'package:PiliPlus/models/common/sponsor_block/segment_type.dart';
 import 'package:PiliPlus/models/common/video/audio_quality.dart';
+import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/models/common/video/source_type.dart';
 import 'package:PiliPlus/models/common/video/video_decode_type.dart';
 import 'package:PiliPlus/models/common/video/video_quality.dart';
@@ -57,6 +58,7 @@ import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
+import 'package:PiliPlus/utils/cdn_probe.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -68,7 +70,7 @@ import 'package:PiliPlus/utils/video_utils.dart';
 import 'package:collection/collection.dart';
 import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart'
     show ExtendedNestedScrollViewState;
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
@@ -699,6 +701,76 @@ class VideoDetailController extends GetxController
     playerInit();
   }
 
+  // --- 自动 CDN（CDNService.auto） -----------------------------------------
+
+  static const _stallGrace = Duration(milliseconds: 2500);
+  static const _rotateBackoff = Duration(seconds: 15);
+
+  bool _cdnProbeScheduled = false;
+  Worker? _stallWorker;
+  Timer? _stallTimer;
+  DateTime? _lastRotate;
+  int _rotations = 0;
+
+  /// Measure the CDN pool in the background once per video, using the stream
+  /// that is actually about to play so the probe exercises the real link.
+  ///
+  /// Deliberately not awaited: the ranking it produces applies to the next
+  /// getCdnUrl call, not this one. Holding the first frame for four seconds of
+  /// measurement costs more than one better host pick is worth.
+  void _scheduleCdnProbe(VideoItem sample) {
+    if (VideoUtils.cdnService != CDNService.auto || _cdnProbeScheduled) return;
+    _cdnProbeScheduled = true;
+    _watchStalls();
+
+    final playUrls = sample.playUrls.toList();
+    Future(() async {
+      await CdnProbe.refreshNetKey();
+      // A cached ranking that is still within its TTL and on the same network
+      // is good enough; only a miss is worth the traffic.
+      if (CdnProbe.current == null) {
+        await CdnProbe.probeAll(playUrls);
+      }
+    });
+  }
+
+  void _watchStalls() {
+    _stallWorker ??= ever(plPlayerController.isBuffering, (bool buffering) {
+      _stallTimer?.cancel();
+      _stallTimer = buffering ? Timer(_stallGrace, _rotateCdn) : null;
+    });
+  }
+
+  /// Stall recovery, mirroring the web version: a grace period so ordinary
+  /// buffering is ignored, a backoff so a dead network does not reload in a
+  /// loop, and a cap of one lap of the pool per video.
+  void _rotateCdn() {
+    if (VideoUtils.cdnService != CDNService.auto ||
+        isFileSource ||
+        currentVideoQa.value == null ||
+        !plPlayerController.isBuffering.value) {
+      return;
+    }
+    if (_rotations >= kProbePool.length - 1) return;
+
+    final last = _lastRotate;
+    if (last != null && DateTime.now().difference(last) < _rotateBackoff) {
+      return;
+    }
+
+    final next = CdnProbe.rotate();
+    if (next == null) return;
+
+    _rotations++;
+    _lastRotate = DateTime.now();
+    if (kDebugMode) {
+      debugPrint('[CdnProbe] stalled, switching to ${next.name}');
+    }
+    // Reuses the quality-switch path, which already re-derives both URLs and
+    // restores the playback position through setDataSource(seekTo:).
+    updatePlayer();
+  }
+
   Future<void>? _initPlayerIfNeeded(bool autoFullScreenFlag) {
     if (_autoPlay.value ||
         (plPlayerController.preInitPlayer && !plPlayerController.processing) &&
@@ -943,6 +1015,7 @@ class VideoDetailController extends GetxController
       _setVideoHeight();
 
       videoUrl = VideoUtils.getCdnUrl(firstVideo.playUrls);
+      _scheduleCdnProbe(firstVideo);
 
       /// 优先顺序 设置中指定质量 -> 当前可选的最高质量
       AudioItem? firstAudio;
@@ -1232,6 +1305,8 @@ class VideoDetailController extends GetxController
   @override
   void onClose() {
     cid.close();
+    _stallTimer?.cancel();
+    _stallWorker?.dispose();
     if (isFileSource) {
       cacheLocalProgress();
     }
@@ -1256,6 +1331,11 @@ class VideoDetailController extends GetxController
     defaultST = null;
     videoUrl = null;
     audioUrl = null;
+
+    // Each video gets a fresh lap of the pool.
+    _stallTimer?.cancel();
+    _rotations = 0;
+    _lastRotate = null;
 
     // danmaku
     savedDanmaku = null;

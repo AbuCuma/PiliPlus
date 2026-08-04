@@ -10,6 +10,7 @@ import 'package:PiliPlus/pages/setting/widgets/ordered_multi_select_dialog.dart'
 import 'package:PiliPlus/pages/setting/widgets/select_dialog.dart';
 import 'package:PiliPlus/plugin/pl_player/models/audio_output_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/hwdec_type.dart';
+import 'package:PiliPlus/utils/cdn_probe.dart';
 import 'package:PiliPlus/utils/filtering_text.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
@@ -58,8 +59,15 @@ List<SettingsModel> get videoSettings => [
   NormalModel(
     title: 'CDN 设置',
     leading: const Icon(MdiIcons.cloudPlusOutline),
-    getSubtitle: () =>
-        '当前使用：${VideoUtils.cdnService.desc}，部分 CDN 可能失效，如无法播放请尝试切换',
+    getSubtitle: () {
+      if (VideoUtils.cdnService == CDNService.auto) {
+        final current = CdnProbe.current;
+        return current == null
+            ? '当前使用：自动（尚未测速，暂用 ${CDNService.cosov.name}）'
+            : '当前使用：自动（${current.name}），播放卡顿时会自动切换';
+      }
+      return '当前使用：${VideoUtils.cdnService.desc}，部分 CDN 可能失效，如无法播放请尝试切换';
+    },
     onTap: _showCDNDialog,
   ),
   NormalModel(

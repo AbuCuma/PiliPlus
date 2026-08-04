@@ -1,15 +1,14 @@
 import 'dart:async';
 
-import 'package:PiliPlus/http/browser_ua.dart';
-import 'package:PiliPlus/http/constants.dart';
 import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/models/common/video/video_type.dart';
 import 'package:PiliPlus/models/video/play/url.dart';
+import 'package:PiliPlus/utils/cdn_probe.dart';
+import 'package:PiliPlus/utils/cdn_rank.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:PiliPlus/utils/video_utils.dart';
-import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 
 class SelectDialog<T> extends StatelessWidget {
@@ -83,51 +82,34 @@ class CdnSelectDialog extends StatefulWidget {
 }
 
 class _CdnSelectDialogState extends State<CdnSelectDialog> {
-  late final List<ValueNotifier<String?>> _cdnResList;
-  late final List<CancelToken?> _tokens;
+  /// Every host worth measuring: the curated auto pool first, then the rest of
+  /// the manually selectable mirrors so the list is still informative for a
+  /// hand-picked CDN. Only pool members can win the auto ranking.
+  static final List<CDNService> _testPool = [
+    ...kProbePool,
+    ...CDNService.values.where((e) => e.host != null && !kProbePool.contains(e)),
+  ];
+
+  final ValueNotifier<Map<CDNService, CdnSample>?> _results = ValueNotifier(null);
   late final bool _cdnSpeedTest;
 
   @override
   void initState() {
+    super.initState();
     _cdnSpeedTest = Pref.cdnSpeedTest;
     if (_cdnSpeedTest) {
-      _dio =
-          Dio(
-              BaseOptions(
-                connectTimeout: const Duration(seconds: 15),
-                receiveTimeout: const Duration(seconds: 15),
-              ),
-            )
-            ..options.headers = {
-              'user-agent': BrowserUa.pc,
-              'referer': HttpString.baseUrl,
-            };
-      final length = CDNService.values.length;
-      _cdnResList = List.generate(
-        length,
-        (_) => ValueNotifier<String?>(null),
-      );
-      _tokens = List.generate(length, (_) => CancelToken());
       _startSpeedTest();
     }
-    super.initState();
   }
 
   @override
   void dispose() {
-    if (_cdnSpeedTest) {
-      for (final e in _tokens) {
-        e?.cancel();
-      }
-      for (final notifier in _cdnResList) {
-        notifier.dispose();
-      }
-      _dio.close(force: true);
-    }
+    _results.dispose();
     super.dispose();
   }
 
-  Future<BaseItem> _getSampleUrl() async {
+  Future<Iterable<String>> _getSampleUrls() async {
+    if (widget.sample case final sample?) return sample.playUrls;
     final result = await VideoHttp.videoUrl(
       cid: 196018899,
       bvid: 'BV1fK4y1t7hj',
@@ -136,109 +118,32 @@ class _CdnSelectDialogState extends State<CdnSelectDialog> {
     );
     final item = result.dataOrNull?.dash?.video?.first;
     if (item == null) throw Exception('无法获取视频流');
-    return item;
+    return item.playUrls;
   }
 
   Future<void> _startSpeedTest() async {
     try {
-      final videoItem = widget.sample ?? await _getSampleUrl();
-      await _testAllCdnServices(videoItem);
+      final urls = await _getSampleUrls();
+      final samples = await CdnProbe.probeAll(urls, pool: _testPool);
+      if (!mounted) return;
+      _results.value = {for (final s in samples) s.service: s};
     } catch (e) {
       if (kDebugMode) debugPrint('CDN speed test failed: $e');
+      if (mounted) _results.value = const {};
     }
   }
 
-  Future<void> _testAllCdnServices(BaseItem videoItem) async {
-    for (final item in CDNService.values) {
-      if (!mounted) break;
-      await _testSingleCdn(item, videoItem);
+  String _subtitleFor(CDNService service, Map<CDNService, CdnSample>? results) {
+    if (service == CDNService.auto) {
+      final current = CdnProbe.current;
+      return current == null ? '测速后自动选择最快节点' : '当前：${current.name}';
     }
-  }
-
-  Future<void> _testSingleCdn(CDNService item, BaseItem videoItem) async {
-    try {
-      final cdnUrl = VideoUtils.getCdnUrl(
-        videoItem.playUrls,
-        defaultCDNService: item,
-      );
-      await _measureDownloadSpeed(cdnUrl, item.index);
-    } catch (e) {
-      _handleSpeedTestError(e, item.index);
-    }
-  }
-
-  late final Dio _dio;
-
-  Future<void> _measureDownloadSpeed(String url, int index) async {
-    const maxSize = 8 * 1024 * 1024;
-    int downloaded = 0;
-
-    final cancelToken = _tokens[index];
-    final start = DateTime.now().microsecondsSinceEpoch;
-
-    void onClose() {
-      cancelToken?.cancel();
-      _tokens[index] = null;
-    }
-
-    await _dio.get(
-      url,
-      cancelToken: cancelToken,
-      onReceiveProgress: (count, total) {
-        if (!mounted) {
-          return;
-        }
-
-        final duration = DateTime.now().microsecondsSinceEpoch - start;
-
-        downloaded += count;
-
-        if (duration > 15000000) {
-          onClose();
-          if (downloaded > 0) {
-            _updateSpeedResult(index, downloaded, duration);
-            downloaded = 0;
-          } else {
-            throw TimeoutException('测速超时');
-          }
-        } else if (downloaded >= maxSize) {
-          onClose();
-          _updateSpeedResult(index, downloaded, duration);
-          downloaded = 0;
-        }
-      },
-    );
-  }
-
-  void _updateSpeedResult(int index, int downloaded, int duration) {
-    final speed = (downloaded / duration).toStringAsPrecision(3);
-    _cdnResList[index].value = '${speed}MB/s';
-  }
-
-  void _handleSpeedTestError(dynamic error, int index) {
-    _tokens
-      ..[index]?.cancel()
-      ..[index] = null;
-    final item = _cdnResList[index];
-    if (item.value != null) return;
-
-    if (kDebugMode) debugPrint('CDN speed test error: $error');
-    if (!mounted) return;
-    String message;
-    if (error is DioException) {
-      final statusCode = error.response?.statusCode;
-      if (statusCode != null && 400 <= statusCode && statusCode < 500) {
-        message = '此视频可能无法替换为该CDN';
-      } else {
-        message = error.toString();
-      }
-    } else {
-      message = error.toString();
-    }
-    if (message.isEmpty) {
-      message = '测速失败';
-    }
-    item.value = message;
+    if (service.host == null) return '';
+    if (results == null) return '测速中…';
+    final sample = results[service];
+    if (sample == null) return '---';
+    final best = CdnProbe.current;
+    return sample.service == best ? '${sample.label} ✓' : sample.label;
   }
 
   @override
@@ -249,12 +154,12 @@ class _CdnSelectDialogState extends State<CdnSelectDialog> {
       value: VideoUtils.cdnService,
       subtitleBuilder: _cdnSpeedTest
           ? (context, index) {
-              final item = _cdnResList[index];
+              final service = CDNService.values[index];
               return ValueListenableBuilder(
-                valueListenable: item,
-                builder: (context, value, _) {
+                valueListenable: _results,
+                builder: (context, results, _) {
                   return Text(
-                    value ?? '---',
+                    _subtitleFor(service, results),
                     style: const TextStyle(fontSize: 13),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
