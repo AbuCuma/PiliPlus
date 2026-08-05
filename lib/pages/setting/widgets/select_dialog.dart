@@ -82,12 +82,18 @@ class CdnSelectDialog extends StatefulWidget {
 }
 
 class _CdnSelectDialogState extends State<CdnSelectDialog> {
-  /// Every host worth measuring: the curated auto pool first, then the rest of
-  /// the manually selectable mirrors so the list is still informative for a
-  /// hand-picked CDN. Only pool members can win the auto ranking.
+  /// Everything worth measuring: the curated auto pool first, then every other
+  /// selectable option. That deliberately includes [CDNService.baseUrl] and
+  /// [CDNService.backupUrl], which rewrite nothing — measuring them is the only
+  /// way to see what bilibili's own assignment is actually worth, and it is the
+  /// comparison that justifies rewriting at all.
+  ///
+  /// Only [kProbePool] members can win the auto ranking; see [CdnProbe.probeAll].
   static final List<CDNService> _testPool = [
     ...kProbePool,
-    ...CDNService.values.where((e) => e.host != null && !kProbePool.contains(e)),
+    ...CDNService.values.where(
+      (e) => e != CDNService.auto && !kProbePool.contains(e),
+    ),
   ];
 
   final ValueNotifier<Map<CDNService, CdnSample>?> _results = ValueNotifier(null);
@@ -138,12 +144,18 @@ class _CdnSelectDialogState extends State<CdnSelectDialog> {
       final current = CdnProbe.current;
       return current == null ? '测速后自动选择最快节点' : '当前：${current.name}';
     }
-    if (service.host == null) return '';
     if (results == null) return '测速中…';
     final sample = results[service];
     if (sample == null) return '---';
-    final best = CdnProbe.current;
-    return sample.service == best ? '${sample.label} ✓' : sample.label;
+
+    // baseUrl / backupUrl rewrite nothing, so their reading is the "no
+    // acceleration" reference every other row should be read against.
+    final suffix = switch (service) {
+      CDNService.baseUrl => '（B站原始分配）',
+      CDNService.backupUrl => '（不改写）',
+      _ => sample.service == CdnProbe.current ? ' ✓' : '',
+    };
+    return '${sample.label}$suffix';
   }
 
   @override
