@@ -49,6 +49,7 @@ import 'package:PiliPlus/pages/video/send_danmaku/view.dart';
 import 'package:PiliPlus/pages/video/widgets/header_control.dart';
 import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
+import 'package:PiliPlus/plugin/pl_player/models/data_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
@@ -707,6 +708,7 @@ class VideoDetailController extends GetxController
   static const _rotateBackoff = Duration(seconds: 15);
 
   bool _cdnProbeScheduled = false;
+  bool _pageVisible = true;
   Worker? _stallWorker;
   Timer? _stallTimer;
   DateTime? _lastRotate;
@@ -735,10 +737,34 @@ class VideoDetailController extends GetxController
   }
 
   void _watchStalls() {
+    // queryVideoUrl is async, so this can be reached after the page was already
+    // covered — tapping through recommendations faster than the request
+    // completes. Without the check, that re-arms a watch cancelStallWatch()
+    // just tore down.
+    if (!_pageVisible) return;
     _stallWorker ??= ever(plPlayerController.isBuffering, (bool buffering) {
       _stallTimer?.cancel();
       _stallTimer = buffering ? Timer(_stallGrace, _rotateCdn) : null;
     });
+  }
+
+  /// Tear the stall watch down when this page stops being the visible one.
+  ///
+  /// The worker listens to the *singleton* player, but pushing a new video page
+  /// does not dispose this controller — so without this, every page left on the
+  /// stack keeps reacting to the current page's buffering.
+  void cancelStallWatch() {
+    _pageVisible = false;
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _stallWorker?.dispose();
+    _stallWorker = null;
+  }
+
+  /// Re-arm on return, but only for a page that actually turned auto CDN on.
+  void startStallWatch() {
+    _pageVisible = true;
+    if (_cdnProbeScheduled) _watchStalls();
   }
 
   /// Stall recovery, mirroring the web version: a grace period so ordinary
@@ -751,6 +777,17 @@ class VideoDetailController extends GetxController
         !plPlayerController.isBuffering.value) {
       return;
     }
+
+    // The player is a process-wide singleton and a pushed-over video page is
+    // never disposed, so a controller can outlive its turn at the player.
+    // Rotating from one that no longer owns playback would swap whatever is
+    // currently on screen for this page's video — the page and the picture then
+    // disagree. Checked before CdnProbe.rotate(), which moves a global cursor
+    // and would leave a trace even if we bailed afterwards.
+    if (isClosed || plPlayerController.dataStatus.none) return;
+    final playing = plPlayerController.dataSource;
+    if (playing is! NetworkSource || playing.videoSource != videoUrl) return;
+
     if (_rotations >= kProbePool.length - 1) return;
 
     final last = _lastRotate;
@@ -764,7 +801,9 @@ class VideoDetailController extends GetxController
     _rotations++;
     _lastRotate = DateTime.now();
     if (kDebugMode) {
-      debugPrint('[CdnProbe] stalled, switching to ${next.name}');
+      // bvid included so a logcat trace shows which page rotated — the check
+      // that this only ever fires from the visible one.
+      debugPrint('[CdnProbe] $bvid stalled, switching to ${next.name}');
     }
     // Reuses the quality-switch path, which already re-derives both URLs and
     // restores the playback position through setDataSource(seekTo:).
@@ -1305,8 +1344,7 @@ class VideoDetailController extends GetxController
   @override
   void onClose() {
     cid.close();
-    _stallTimer?.cancel();
-    _stallWorker?.dispose();
+    cancelStallWatch();
     if (isFileSource) {
       cacheLocalProgress();
     }

@@ -379,6 +379,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     videoDetailController
       ..videoState.value = false
       ..cancelBlockListener()
+      ..cancelStallWatch()
       ..playerStatus = plPlayerController?.playerStatus.value
       ..brightness = plPlayerController?.brightness.value;
     if (plPlayerController != null) {
@@ -412,6 +413,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     PlPlayerController.setPlayCallBack(playCallBack);
 
     introController.startTimer();
+    videoDetailController.startStallWatch();
 
     if (mounted &&
         Platform.isAndroid &&
