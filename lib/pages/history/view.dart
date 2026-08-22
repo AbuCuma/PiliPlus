@@ -14,8 +14,8 @@ import 'package:PiliPlus/pages/history/controller.dart';
 import 'package:PiliPlus/pages/history/widgets/item.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
 import 'package:PiliPlus/utils/grid.dart';
-import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:material_ui/material_ui.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key, this.type});
@@ -100,66 +100,55 @@ class _HistoryPageState extends State<HistoryPage>
               child: _buildAppBar,
             ),
             body: Padding(
-              padding: EdgeInsets.only(
-                left: padding.left,
-                right: padding.right,
-              ),
-              child: Column(
-                children: [
-                  ?_buildPauseTip,
-                  Expanded(
-                    child: Obx(() {
-                      final tabs = _historyController.tabs;
-                      if (tabs.isEmpty) {
-                        return child;
-                      }
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+              padding: .only(left: padding.left, right: padding.right),
+              child: Obx(() {
+                final tabs = _historyController.tabs;
+                if (tabs.isEmpty) {
+                  return child;
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ?_buildPauseTip,
+                    TabBar(
+                      controller: _historyController.tabController,
+                      onTap: (index) {
+                        if (!_historyController
+                            .tabController!
+                            .indexIsChanging) {
+                          currCtr().scrollController.animToTop();
+                        } else {
+                          if (enableMultiSelect) {
+                            currCtr(
+                              _historyController.tabController!.previousIndex,
+                            ).handleSelect();
+                          }
+                        }
+                      },
+                      tabs: [
+                        const Tab(text: '全部'),
+                        ...tabs.map((item) => Tab(text: item.name)),
+                      ],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        physics: enableMultiSelect
+                            ? const NeverScrollableScrollPhysics()
+                            : tabBarScrollPhysics,
+                        controller: _historyController.tabController,
+                        horizontalDragGestureRecognizer:
+                            CustomHorizontalDragGestureRecognizer.new,
                         children: [
-                          TabBar(
-                            controller: _historyController.tabController,
-                            onTap: (index) {
-                              if (!_historyController
-                                  .tabController!
-                                  .indexIsChanging) {
-                                currCtr().scrollController.animToTop();
-                              } else {
-                                if (enableMultiSelect) {
-                                  currCtr(
-                                    _historyController
-                                        .tabController!
-                                        .previousIndex,
-                                  ).handleSelect();
-                                }
-                              }
-                            },
-                            tabs: [
-                              const Tab(text: '全部'),
-                              ...tabs.map((item) => Tab(text: item.name)),
-                            ],
-                          ),
-                          Expanded(
-                            child: TabBarView(
-                              physics: enableMultiSelect
-                                  ? const NeverScrollableScrollPhysics()
-                                  : tabBarScrollPhysics,
-                              controller: _historyController.tabController,
-                              horizontalDragGestureRecognizer:
-                                  CustomHorizontalDragGestureRecognizer.new,
-                              children: [
-                                KeepAliveWrapper(child: child),
-                                ...tabs.map(
-                                  (item) => HistoryPage(type: item.type),
-                                ),
-                              ],
-                            ),
+                          KeepAliveWrapper(child: child),
+                          ...tabs.map(
+                            (item) => HistoryPage(type: item.type),
                           ),
                         ],
-                      );
-                    }),
-                  ),
-                ],
-              ),
+                      ),
+                    ),
+                  ],
+                );
+              }),
             ),
           ),
         );
